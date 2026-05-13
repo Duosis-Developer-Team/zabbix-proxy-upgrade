@@ -14,142 +14,75 @@ def parse_zabbix_conf(filepath):
     return params
 
 
-def parse_postgresql_conf(filepath):
-    params = {}
-    try:
-        with open(filepath) as f:
-            for line in f:
-                s = line.strip()
-                if not s or s.startswith('#'):
-                    continue
-                m = re.match(r'^([a-z_]+)\s*=\s*([^#\n]+)', s)
-                if m:
-                    params[m.group(1).strip()] = m.group(2).strip().strip("'\"")
-    except FileNotFoundError:
-        pass
-    return params
+def update_zabbix_conf(content, updates):
+    """
+    Read existing conf content line by line.
+    Only replace lines for keys in `updates`.
+    If a key is not found (was commented out), append it at the end.
+    All other lines are kept exactly as-is.
+    """
+    lines = content.splitlines(keepends=True)
+    result = []
+    replaced_keys = set()
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped.startswith('#') or not stripped:
+            result.append(line)
+            continue
+
+        replaced = False
+        for key, new_value in updates.items():
+            if re.match(r'^' + re.escape(key) + r'=', stripped):
+                result.append(f"{key}={new_value}\n")
+                replaced_keys.add(key)
+                replaced = True
+                break
+
+        if not replaced:
+            result.append(line)
+
+    # Append any keys that were not found (e.g. were commented out)
+    for key, value in updates.items():
+        if key not in replaced_keys:
+            result.append(f"{key}={value}\n")
+
+    return ''.join(result)
 
 
-def get(params, key, default=''):
-    return params.get(key, default)
+def update_postgresql_conf(content, updates):
+    """
+    Same approach for postgresql.conf.
+    Format: key = value  (spaces around =, values may be quoted)
+    """
+    lines = content.splitlines(keepends=True)
+    result = []
+    replaced_keys = set()
 
+    for line in lines:
+        stripped = line.strip()
 
-def generate_proxy_conf(old, db_password, server_ips):
-    server = get(old, 'Server', server_ips)
-    proxy_config_freq = (
-        old.get('ProxyConfigFrequency') or
-        old.get('ConfigFrequency', '300')
-    )
-    return "\n".join([
-        f"Server={server}",
-        f"Hostname={old['Hostname']}",
-        f"LogFile=/var/log/zabbix/zabbix_proxy.log",
-        f"LogFileSize={get(old, 'LogFileSize', '0')}",
-        f"PidFile=/run/zabbix/zabbix_proxy.pid",
-        f"SocketDir=/run/zabbix",
-        "",
-        f"DBName=zabbix_proxy",
-        f"DBUser=zabbix",
-        f"DBPassword={db_password}",
-        f"AllowUnsupportedDBVersions=0",
-        "",
-        f"ProxyBufferMode={get(old, 'ProxyBufferMode', 'hybrid')}",
-        f"ProxyMemoryBufferSize={get(old, 'ProxyMemoryBufferSize', '1G')}",
-        f"ProxyConfigFrequency={proxy_config_freq}",
-        "",
-        f"StartPollers={get(old, 'StartPollers', '200')}",
-        f"StartAgentPollers={get(old, 'StartAgentPollers', '50')}",
-        f"StartHTTPAgentPollers={get(old, 'StartHTTPAgentPollers', '100')}",
-        f"StartSNMPPollers={get(old, 'StartSNMPPollers', '100')}",
-        f"StartIPMIPollers={get(old, 'StartIPMIPollers', '10')}",
-        f"StartPreprocessors={get(old, 'StartPreprocessors', '150')}",
-        f"StartPollersUnreachable={get(old, 'StartPollersUnreachable', '120')}",
-        f"StartTrappers={get(old, 'StartTrappers', '50')}",
-        f"StartPingers={get(old, 'StartPingers', '100')}",
-        f"StartDiscoverers={get(old, 'StartDiscoverers', '50')}",
-        f"StartHTTPPollers={get(old, 'StartHTTPPollers', '150')}",
-        "",
-        f"StartVMwareCollectors={get(old, 'StartVMwareCollectors', '50')}",
-        f"VMwareCacheSize={get(old, 'VMwareCacheSize', '2G')}",
-        f"VMwareTimeout={get(old, 'VMwareTimeout', '15')}",
-        "",
-        f"SNMPTrapperFile={get(old, 'SNMPTrapperFile', '/var/log/snmptrap/snmptrap.log')}",
-        f"StartSNMPTrapper={get(old, 'StartSNMPTrapper', '1')}",
-        "",
-        f"CacheSize={get(old, 'CacheSize', '4G')}",
-        f"StartDBSyncers={get(old, 'StartDBSyncers', '8')}",
-        f"HistoryCacheSize={get(old, 'HistoryCacheSize', '2G')}",
-        f"HistoryIndexCacheSize={get(old, 'HistoryIndexCacheSize', '2G')}",
-        "",
-        f"Timeout={get(old, 'Timeout', '25')}",
-        f"LogSlowQueries={get(old, 'LogSlowQueries', '3000')}",
-        "",
-        f"FpingLocation=/usr/bin/fping",
-        f"Fping6Location=/usr/bin/fping6",
-        "",
-        f"StatsAllowedIP={get(old, 'StatsAllowedIP', '127.0.0.1')}",
-        "",
-        f"Include=/etc/zabbix/zabbix_proxy.d/*.conf",
-        "",
-    ]) + "\n"
+        if stripped.startswith('#') or not stripped:
+            result.append(line)
+            continue
 
+        replaced = False
+        for key, new_value in updates.items():
+            if re.match(r'^' + re.escape(key) + r'\s*=', stripped):
+                result.append(f"{key} = {new_value}\n")
+                replaced_keys.add(key)
+                replaced = True
+                break
 
-def generate_agent2_conf(old, server_ips):
-    server = get(old, 'Server', server_ips)
-    return "\n".join([
-        f"PidFile=/run/zabbix/zabbix_agent2.pid",
-        f"LogFile=/var/log/zabbix/zabbix_agent2.log",
-        f"LogFileSize=0",
-        "",
-        f"Server={server.replace(';', ',')}",
-        f"ServerActive={server}",
-        f"Hostname={old['Hostname']}",
-        "",
-        f"PluginSocket=/run/zabbix/agent.plugin.sock",
-        f"ControlSocket=/run/zabbix/agent.sock",
-        "",
-        f"Include=/etc/zabbix/zabbix_agent2.d/plugins.d/*.conf",
-        f"Include=/etc/zabbix/zabbix_agent2.d/*.conf",
-        "",
-    ]) + "\n"
+        if not replaced:
+            result.append(line)
 
+    for key, value in updates.items():
+        if key not in replaced_keys:
+            result.append(f"{key} = {value}\n")
 
-def generate_postgresql_conf(old_pg, data_dir):
-    def pgv(key, default):
-        return old_pg.get(key, default)
-
-    return "\n".join([
-        f"data_directory = '{data_dir}'",
-        f"listen_addresses = '{pgv('listen_addresses', 'localhost')}'",
-        f"port = {pgv('port', '5432')}",
-        f"max_connections = {pgv('max_connections', '100')}",
-        "",
-        f"shared_buffers = {pgv('shared_buffers', '512MB')}",
-        f"work_mem = {pgv('work_mem', '16MB')}",
-        f"maintenance_work_mem = {pgv('maintenance_work_mem', '128MB')}",
-        "",
-        f"wal_buffers = {pgv('wal_buffers', '64MB')}",
-        f"checkpoint_completion_target = {pgv('checkpoint_completion_target', '0.9')}",
-        f"min_wal_size = {pgv('min_wal_size', '1GB')}",
-        f"max_wal_size = {pgv('max_wal_size', '4GB')}",
-        "",
-        f"random_page_cost = {pgv('random_page_cost', '1.1')}",
-        f"effective_io_concurrency = {pgv('effective_io_concurrency', '200')}",
-        f"default_statistics_target = {pgv('default_statistics_target', '100')}",
-        "",
-        f"max_worker_processes = {pgv('max_worker_processes', '8')}",
-        f"max_parallel_workers_per_gather = {pgv('max_parallel_workers_per_gather', '4')}",
-        f"max_parallel_workers = {pgv('max_parallel_workers', '8')}",
-        f"max_parallel_maintenance_workers = {pgv('max_parallel_maintenance_workers', '4')}",
-        "",
-        f"logging_collector = {pgv('logging_collector', 'on')}",
-        f"log_directory = 'log'",
-        f"log_filename = 'postgresql-%Y-%m-%d.log'",
-        f"log_rotation_age = {pgv('log_rotation_age', '1d')}",
-        f"log_min_duration_statement = {pgv('log_min_duration_statement', '3000')}",
-        f"log_line_prefix = '%m [%p] %q%u@%d '",
-        "",
-    ]) + "\n"
+    return ''.join(result)
 
 
 def write_file(path, content, mode=0o640):
@@ -159,16 +92,18 @@ def write_file(path, content, mode=0o640):
 
 
 def main():
-    if len(sys.argv) < 3:
-        print(json.dumps({"error": "Usage: generate_configs.py <zabbix_backup> <pg_backup>"}))
+    if len(sys.argv) < 4:
+        print(json.dumps({"error": "Usage: generate_configs.py <proxy_backup> <agent2_backup> <pg_backup>"}))
         sys.exit(1)
 
-    zabbix_backup = sys.argv[1]
-    pg_backup     = sys.argv[2]
-    db_password   = os.environ.get('ZABBIX_DB_PASSWORD', '')
-    server_ips    = os.environ.get('ZABBIX_SERVER_IPS', '')
-    pg_version    = os.environ.get('POSTGRES_VERSION', '16')
-    pg_data_dir   = os.environ.get('POSTGRES_DATA_DIR', '/postgres/data')
+    proxy_backup  = sys.argv[1]   # /etc/zabbix/zabbix_proxy.conf.backup
+    agent2_backup = sys.argv[2]   # /etc/zabbix/zabbix_agent2.conf.backup
+    pg_backup     = sys.argv[3]   # /tmp/postgresql_old.conf.backup
+
+    db_password  = os.environ.get('ZABBIX_DB_PASSWORD', '')
+    server_ips   = os.environ.get('ZABBIX_SERVER_IPS', '')
+    pg_version   = os.environ.get('POSTGRES_VERSION', '16')
+    pg_data_dir  = os.environ.get('POSTGRES_DATA_DIR', '/postgres/data')
 
     if not db_password:
         print(json.dumps({"error": "ZABBIX_DB_PASSWORD not set"}))
@@ -178,35 +113,67 @@ def main():
         print(json.dumps({"error": "ZABBIX_SERVER_IPS not set"}))
         sys.exit(1)
 
+    # --- zabbix_proxy.conf ---
+    # Read full backup, update only: Server, DBPassword
+    # Hostname stays as-is from backup (not touched)
     try:
-        old_zabbix = parse_zabbix_conf(zabbix_backup)
+        with open(proxy_backup) as f:
+            proxy_content = f.read()
     except FileNotFoundError:
-        print(json.dumps({"error": f"Zabbix backup not found: {zabbix_backup}"}))
+        print(json.dumps({"error": f"Proxy backup not found: {proxy_backup}"}))
         sys.exit(1)
 
-    if 'Hostname' not in old_zabbix:
-        print(json.dumps({"error": "Hostname not found in zabbix backup"}))
+    new_proxy_conf = update_zabbix_conf(proxy_content, {
+        'Server':     server_ips,
+        'DBPassword': db_password,
+    })
+    write_file('/etc/zabbix/zabbix_proxy.conf', new_proxy_conf)
+
+    # --- zabbix_agent2.conf ---
+    # Read full backup, update only: Server, ServerActive
+    # Hostname stays as-is from backup
+    try:
+        with open(agent2_backup) as f:
+            agent2_content = f.read()
+    except FileNotFoundError:
+        print(json.dumps({"error": f"Agent2 backup not found: {agent2_backup}"}))
         sys.exit(1)
 
-    old_pg = parse_postgresql_conf(pg_backup)
+    agent2_server_passive = server_ips.replace(';', ',')
 
-    proxy_conf  = generate_proxy_conf(old_zabbix, db_password, server_ips)
-    agent2_conf = generate_agent2_conf(old_zabbix, server_ips)
-    pg_conf     = generate_postgresql_conf(old_pg, pg_data_dir)
+    new_agent2_conf = update_zabbix_conf(agent2_content, {
+        'Server':       agent2_server_passive,
+        'ServerActive': server_ips,
+    })
+    write_file('/etc/zabbix/zabbix_agent2.conf', new_agent2_conf)
 
-    write_file('/etc/zabbix/zabbix_proxy.conf',  proxy_conf)
-    write_file('/etc/zabbix/zabbix_agent2.conf', agent2_conf)
-    write_file(f'/etc/postgresql/{pg_version}/main/postgresql.conf', pg_conf, mode=0o644)
+    # --- postgresql.conf ---
+    # Read full backup, update only: data_directory
+    # All other tuning params stay as-is
+    try:
+        with open(pg_backup) as f:
+            pg_content = f.read()
+    except FileNotFoundError:
+        pg_content = ''
+
+    new_pg_conf = update_postgresql_conf(pg_content, {
+        'data_directory': f"'{pg_data_dir}'",
+    })
+    write_file(
+        f'/etc/postgresql/{pg_version}/main/postgresql.conf',
+        new_pg_conf,
+        mode=0o644
+    )
+
+    # Parse proxy backup for reporting
+    old_proxy = parse_zabbix_conf(proxy_backup)
 
     print(json.dumps({
-        "hostname":               old_zabbix['Hostname'],
-        "server":                 get(old_zabbix, 'Server', server_ips),
-        "proxy_config_frequency": old_zabbix.get('ProxyConfigFrequency') or old_zabbix.get('ConfigFrequency', '300'),
-        "vmware_cache_size":      get(old_zabbix, 'VMwareCacheSize', '2G'),
-        "cache_size":             get(old_zabbix, 'CacheSize', '4G'),
-        "start_pollers":          get(old_zabbix, 'StartPollers', '200'),
-        "pg_shared_buffers":      old_pg.get('shared_buffers', 'default'),
-        "pg_max_connections":     old_pg.get('max_connections', 'default'),
+        "hostname":         old_proxy.get('Hostname', 'unknown'),
+        "server":           server_ips,
+        "vmware_cache":     old_proxy.get('VMwareCacheSize', 'unchanged'),
+        "cache_size":       old_proxy.get('CacheSize', 'unchanged'),
+        "start_pollers":    old_proxy.get('StartPollers', 'unchanged'),
     }))
 
 

@@ -131,6 +131,7 @@
   shell: >
     python3 /tmp/generate_configs.py
     /etc/zabbix/zabbix_proxy.conf.backup
+    /etc/zabbix/zabbix_agent2.conf.backup
     /tmp/postgresql_old.conf.backup
   environment:
     ZABBIX_DB_PASSWORD: "{{ zabbix_db_password }}"
