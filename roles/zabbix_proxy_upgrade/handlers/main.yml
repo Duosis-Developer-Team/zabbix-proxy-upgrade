@@ -1,0 +1,15 @@
+---
+- name: restart postgresql
+  systemd:
+    name: postgresql
+    state: restarted
+
+- name: restart zabbix-proxy
+  systemd:
+    name: zabbix-proxy
+    state: restarted
+
+- name: restart zabbix-agent2
+  systemd:
+    name: zabbix-agent2
+    state: restarted

@@ -1,0 +1,195 @@
+---
+- name: "[1/10] Backup zabbix_proxy.conf"
+  copy:
+    src: /etc/zabbix/zabbix_proxy.conf
+    dest: /etc/zabbix/zabbix_proxy.conf.backup
+    remote_src: true
+    force: false
+
+- name: "[1/10] Backup zabbix_agent2.conf"
+  copy:
+    src: /etc/zabbix/zabbix_agent2.conf
+    dest: /etc/zabbix/zabbix_agent2.conf.backup
+    remote_src: true
+    force: false
+
+- name: "[1/10] Backup postgresql.conf (before pg{{ postgres_old_version }} is removed)"
+  copy:
+    src: "/etc/postgresql/{{ postgres_old_version }}/main/postgresql.conf"
+    dest: /tmp/postgresql_old.conf.backup
+    remote_src: true
+    force: false
+
+- name: "[2/10] apt update"
+  apt:
+    update_cache: true
+    cache_valid_time: 0
+
+- name: "[2/10] Install PostgreSQL {{ postgres_version }}"
+  apt:
+    name: "postgresql-{{ postgres_version }}"
+    state: present
+
+- name: "[3/10] Download Zabbix 7.0 release package"
+  get_url:
+    url: "{{ zabbix_release_url }}"
+    dest: "/tmp/{{ zabbix_release_deb }}"
+    mode: '0644'
+    force: true
+
+- name: "[3/10] Install Zabbix 7.0 release package"
+  apt:
+    deb: "/tmp/{{ zabbix_release_deb }}"
+
+- name: "[3/10] apt update after new repo"
+  apt:
+    update_cache: true
+    cache_valid_time: 0
+
+- name: "[3/10] Upgrade zabbix-proxy-pgsql and zabbix-sql-scripts"
+  apt:
+    name:
+      - zabbix-proxy-pgsql
+      - zabbix-sql-scripts
+    state: latest
+    only_upgrade: true
+
+- name: "[4/10] Stop PostgreSQL {{ postgres_old_version }}"
+  systemd:
+    name: "postgresql@{{ postgres_old_version }}-main"
+    state: stopped
+  ignore_errors: true
+
+- name: "[4/10] Remove PostgreSQL {{ postgres_old_version }}"
+  apt:
+    name:
+      - "postgresql-{{ postgres_old_version }}"
+      - "postgresql-client-{{ postgres_old_version }}"
+    state: absent
+    purge: true
+  ignore_errors: true
+
+- name: "[4/10] apt autoremove"
+  apt:
+    autoremove: true
+    purge: true
+
+- name: "[5/10] Create PostgreSQL data directory"
+  file:
+    path: "{{ postgres_data_dir }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: '0700'
+
+- name: "[5/10] Fix /postgres ownership"
+  file:
+    path: /postgres
+    state: directory
+    owner: postgres
+    group: postgres
+    recurse: true
+
+- name: "[5/10] Stop auto-created pg{{ postgres_version }} cluster if running"
+  shell: "pg_ctlcluster {{ postgres_version }} main stop || true"
+  changed_when: false
+
+- name: "[5/10] Drop auto-created pg{{ postgres_version }} cluster"
+  shell: "pg_dropcluster {{ postgres_version }} main || true"
+  changed_when: false
+
+- name: "[5/10] Create PostgreSQL {{ postgres_version }} cluster at custom data directory"
+  shell: "pg_createcluster {{ postgres_version }} main -d {{ postgres_data_dir }}"
+
+- name: "[6/10] Copy config generator script"
+  copy:
+    src: generate_configs.py
+    dest: /tmp/generate_configs.py
+    mode: '0755'
+
+- name: "[6/10] Generate and deploy all config files"
+  shell: >
+    python3 /tmp/generate_configs.py
+    /etc/zabbix/zabbix_proxy.conf.backup
+    /tmp/postgresql_old.conf.backup
+  environment:
+    ZABBIX_DB_PASSWORD: "{{ zabbix_db_password }}"
+    ZABBIX_SERVER_IPS: "{{ zabbix_server_ips }}"
+    POSTGRES_VERSION: "{{ postgres_version }}"
+    POSTGRES_DATA_DIR: "{{ postgres_data_dir }}"
+  register: config_result
+  notify:
+    - restart zabbix-proxy
+    - restart zabbix-agent2
+
+- name: "[6/10] Show migrated config values"
+  debug:
+    msg: "{{ config_result.stdout | from_json }}"
+
+- name: "[6/10] Remove generator script from host"
+  file:
+    path: /tmp/generate_configs.py
+    state: absent
+
+- name: "[7/10] Start and enable PostgreSQL"
+  systemd:
+    name: postgresql
+    state: started
+    enabled: true
+
+- name: "[8/10] Create zabbix database user"
+  community.postgresql.postgresql_user:
+    name: zabbix
+    password: "{{ zabbix_db_password }}"
+    state: present
+  become_user: postgres
+
+- name: "[8/10] Create zabbix_proxy database"
+  community.postgresql.postgresql_db:
+    name: zabbix_proxy
+    owner: zabbix
+    state: present
+  become_user: postgres
+
+- name: "[9/10] Check if schema is already loaded"
+  community.postgresql.postgresql_query:
+    db: zabbix_proxy
+    query: "SELECT to_regclass('public.hosts') IS NOT NULL AS exists"
+    login_user: postgres
+  become_user: postgres
+  register: schema_check
+
+- name: "[9/10] Load proxy SQL schema"
+  shell: cat /usr/share/zabbix-sql-scripts/postgresql/proxy.sql | sudo -u zabbix psql zabbix_proxy
+  when: not schema_check.query_result[0].exists
+
+- name: "[10/10] Enable all services"
+  systemd:
+    name: "{{ item }}"
+    enabled: true
+  loop:
+    - postgresql
+    - zabbix-proxy
+    - zabbix-agent2
+
+- name: "[10/10] Flush handlers (restart services)"
+  meta: flush_handlers
+
+- name: "[10/10] Verify services are active"
+  shell: systemctl is-active {{ item }}
+  register: svc_status
+  changed_when: false
+  failed_when: svc_status.stdout != 'active'
+  loop:
+    - postgresql
+    - zabbix-proxy
+    - zabbix-agent2
+
+- name: "[10/10] Show Zabbix proxy version"
+  shell: zabbix_proxy -V 2>&1 | head -1
+  register: zabbix_version_out
+  changed_when: false
+
+- name: "[10/10] Version"
+  debug:
+    msg: "{{ zabbix_version_out.stdout }}"

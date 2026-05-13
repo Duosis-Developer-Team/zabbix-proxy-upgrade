@@ -1,0 +1,8 @@
+---
+zabbix_version: "7.0"
+postgres_version: 16
+postgres_old_version: 14
+postgres_data_dir: "/postgres/data"
+
+zabbix_release_deb: "zabbix-release_latest_7.0+debian12_all.deb"
+zabbix_release_url: "https://repo.zabbix.com/zabbix/7.0/debian/pool/main/z/zabbix-release/{{ zabbix_release_deb }}"

@@ -1,0 +1,8 @@
+---
+- name: Zabbix Proxy Upgrade
+  hosts: zabbix_proxies
+  become: true
+  gather_facts: true
+
+  roles:
+    - zabbix_proxy_upgrade
