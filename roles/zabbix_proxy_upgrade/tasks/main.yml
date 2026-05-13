@@ -20,22 +20,30 @@
     remote_src: true
     force: false
 
-- name: "[2/10] Remove invalid postgresql apt repo entries"
+- name: "[2/10] Clean invalid and duplicate apt sources"
   shell: |
+    # Remove bullseye postgresql repo (wrong codename for Debian 12)
     sed -i '/apt\.postgresql\.org.*bullseye/d' /etc/apt/sources.list
-    find /etc/apt/sources.list.d/ -name "*.list" -exec grep -l "bullseye-pgdg" {} \; | xargs -r rm -f
-  changed_when: true
 
-- name: "[2/10] Deduplicate apt sources.list"
-  shell: |
-    awk '!seen[$0]++' /etc/apt/sources.list > /tmp/sources.list.dedup
-    mv /tmp/sources.list.dedup /etc/apt/sources.list
+    # Remove any .list files in sources.list.d with bullseye-pgdg
+    find /etc/apt/sources.list.d/ -name "*.list" | xargs -r grep -l "bullseye-pgdg" | xargs -r rm -f
+
+    # Deduplicate sources.list (remove exact duplicate lines)
+    awk '!seen[$0]++' /etc/apt/sources.list > /tmp/sources.list.clean
+    mv /tmp/sources.list.clean /etc/apt/sources.list
   changed_when: true
 
 - name: "[2/10] apt update"
-  apt:
-    update_cache: true
-    cache_valid_time: 0
+  shell: apt-get update 2>&1
+  register: apt_update_result
+  changed_when: false
+  failed_when:
+    - apt_update_result.rc != 0
+    - "'Err:' in apt_update_result.stdout"
+
+- name: "[2/10] apt update output"
+  debug:
+    msg: "{{ apt_update_result.stdout_lines[-5:] }}"
 
 - name: "[2/10] Install PostgreSQL {{ postgres_version }}"
   apt:
