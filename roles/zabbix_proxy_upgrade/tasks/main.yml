@@ -20,6 +20,18 @@
     remote_src: true
     force: false
 
+- name: "[2/10] Remove invalid postgresql apt repo entries"
+  shell: |
+    sed -i '/apt\.postgresql\.org.*bullseye/d' /etc/apt/sources.list
+    find /etc/apt/sources.list.d/ -name "*.list" -exec grep -l "bullseye-pgdg" {} \; | xargs -r rm -f
+  changed_when: true
+
+- name: "[2/10] Deduplicate apt sources.list"
+  shell: |
+    awk '!seen[$0]++' /etc/apt/sources.list > /tmp/sources.list.dedup
+    mv /tmp/sources.list.dedup /etc/apt/sources.list
+  changed_when: true
+
 - name: "[2/10] apt update"
   apt:
     update_cache: true
