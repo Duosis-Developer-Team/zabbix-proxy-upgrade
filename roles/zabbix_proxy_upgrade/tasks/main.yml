@@ -158,31 +158,29 @@
     state: started
     enabled: true
 
-- name: "[8/10] Create zabbix database user"
-  community.postgresql.postgresql_user:
-    name: zabbix
-    password: "{{ zabbix_db_password }}"
-    state: present
-  become_user: postgres
+- name: "[8/10] Create zabbix user and set password"
+  shell: |
+    sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='zabbix'" | grep -q 1 \
+      && sudo -u postgres psql -c "ALTER USER zabbix WITH PASSWORD '{{ zabbix_db_password }}';" \
+      || sudo -u postgres psql -c "CREATE USER zabbix WITH PASSWORD '{{ zabbix_db_password }}';"
+  changed_when: true
+  no_log: true
 
 - name: "[8/10] Create zabbix_proxy database"
-  community.postgresql.postgresql_db:
-    name: zabbix_proxy
-    owner: zabbix
-    state: present
-  become_user: postgres
+  shell: |
+    sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='zabbix_proxy'" | grep -q 1 \
+      || sudo -u postgres createdb -O zabbix zabbix_proxy
+  register: db_create
+  changed_when: "'already exists' not in db_create.stderr"
 
 - name: "[9/10] Check if schema is already loaded"
-  community.postgresql.postgresql_query:
-    db: zabbix_proxy
-    query: "SELECT to_regclass('public.hosts') IS NOT NULL AS exists"
-    login_user: postgres
-  become_user: postgres
+  shell: sudo -u postgres psql -d zabbix_proxy -tAc "SELECT to_regclass('public.hosts') IS NOT NULL"
   register: schema_check
+  changed_when: false
 
 - name: "[9/10] Load proxy SQL schema"
   shell: cat /usr/share/zabbix-sql-scripts/postgresql/proxy.sql | sudo -u zabbix psql zabbix_proxy
-  when: not schema_check.query_result[0].exists
+  when: schema_check.stdout | trim != 't'
 
 - name: "[10/10] Enable all services"
   systemd:
