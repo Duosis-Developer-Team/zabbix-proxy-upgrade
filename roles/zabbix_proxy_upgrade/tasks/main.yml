@@ -15,21 +15,24 @@
     remote_src: true
     force: false
 
-- name: "[1/10] Backup postgresql.conf"
+- name: "[1/10] Backup postgresql.conf (only if pg{{ postgres_old_version }} conf exists)"
   copy:
     src: "/etc/postgresql/{{ postgres_old_version }}/main/postgresql.conf"
     dest: /tmp/postgresql_old.conf.backup
     remote_src: true
     force: false
+  ignore_errors: true
 
 - name: "[1/10] Detect old PostgreSQL data directory"
   shell: |
-    grep -E "^data_directory\s*=" /etc/postgresql/{{ postgres_old_version }}/main/postgresql.conf \
-      | sed "s/.*=\s*'//;s/'.*$//" \
-      | xargs
+    if [ -f /tmp/postgresql_old.conf.backup ]; then
+      grep -E "^data_directory\s*=" /tmp/postgresql_old.conf.backup \
+        | sed "s/.*=\s*'//;s/'.*$//" | xargs
+    else
+      echo "/var/lib/postgresql/{{ postgres_old_version }}/main"
+    fi
   register: pg_old_data_dir_raw
   changed_when: false
-  failed_when: false
 
 - name: "[1/10] Calculate new PostgreSQL data directory"
   set_fact:
@@ -46,9 +49,9 @@
 
 - name: "[1/10] Show detected data directory"
   debug:
-    msg: "Old: {{ pg_old_data_dir_raw.stdout | trim }} → New: {{ pg_new_data_dir }}"
+    msg: "Old pg{{ postgres_old_version }} path: {{ pg_old_data_dir_raw.stdout | trim }} → New pg{{ postgres_version }} path: {{ pg_new_data_dir }}"
 
-# ── PHASE 2: APT SOURCES CLEANUP + UPDATE ────────────────────────────────────
+# ── PHASE 2: APT SOURCES CLEANUP + PACKAGES ──────────────────────────────────
 
 - name: "[2/10] Clean invalid and duplicate apt sources"
   shell: |
@@ -66,12 +69,25 @@
     - apt_update_result.rc != 0
     - "'Err:' in apt_update_result.stdout"
 
+- name: "[2/10] Check if PostgreSQL {{ postgres_version }} already installed"
+  shell: dpkg -l postgresql-{{ postgres_version }} 2>/dev/null | grep -q '^ii'
+  register: pg_new_installed
+  changed_when: false
+  failed_when: false
+
 - name: "[2/10] Install PostgreSQL {{ postgres_version }}"
   apt:
     name: "postgresql-{{ postgres_version }}"
     state: present
+  when: pg_new_installed.rc != 0
 
 # ── PHASE 3: ZABBIX 7.0 UPGRADE ──────────────────────────────────────────────
+
+- name: "[3/10] Check current Zabbix proxy version"
+  shell: zabbix_proxy -V 2>&1 | grep -oP '\d+\.\d+' | head -1
+  register: current_zabbix_ver
+  changed_when: false
+  failed_when: false
 
 - name: "[3/10] Download Zabbix 7.0 release package"
   get_url:
@@ -79,15 +95,18 @@
     dest: "/tmp/{{ zabbix_release_deb }}"
     mode: '0644'
     force: true
+  when: current_zabbix_ver.stdout != zabbix_version
 
 - name: "[3/10] Install Zabbix 7.0 release package"
   apt:
     deb: "/tmp/{{ zabbix_release_deb }}"
+  when: current_zabbix_ver.stdout != zabbix_version
 
 - name: "[3/10] apt update after new repo"
   apt:
     update_cache: true
     cache_valid_time: 0
+  when: current_zabbix_ver.stdout != zabbix_version
 
 - name: "[3/10] Upgrade zabbix-proxy-pgsql and zabbix-sql-scripts"
   apt:
@@ -96,17 +115,24 @@
       - zabbix-sql-scripts
     state: latest
     only_upgrade: true
+  when: current_zabbix_ver.stdout != zabbix_version
 
 # ── PHASE 4: REMOVE POSTGRESQL OLD VERSION ───────────────────────────────────
+
+- name: "[4/10] Check if PostgreSQL {{ postgres_old_version }} is installed"
+  shell: dpkg -l postgresql-{{ postgres_old_version }} 2>/dev/null | grep -q '^ii'
+  register: pg_old_installed
+  changed_when: false
+  failed_when: false
 
 - name: "[4/10] Stop and disable PostgreSQL {{ postgres_old_version }}"
   shell: |
     systemctl stop postgresql@{{ postgres_old_version }}-main 2>/dev/null || true
     systemctl stop postgresql 2>/dev/null || true
     systemctl disable postgresql@{{ postgres_old_version }}-main 2>/dev/null || true
-    pkill -u postgres || true
     sleep 2
   changed_when: true
+  when: pg_old_installed.rc == 0
 
 - name: "[4/10] Remove PostgreSQL {{ postgres_old_version }}"
   apt:
@@ -115,12 +141,13 @@
       - "postgresql-client-{{ postgres_old_version }}"
     state: absent
     purge: true
-  ignore_errors: true
+  when: pg_old_installed.rc == 0
 
 - name: "[4/10] apt autoremove"
   apt:
     autoremove: true
     purge: true
+  when: pg_old_installed.rc == 0
 
 - name: "[4/10] Verify port 5432 is free"
   shell: ss -tlnp | grep ':5432' || echo "free"
@@ -133,6 +160,16 @@
 
 # ── PHASE 5: POSTGRESQL 16 CLUSTER SETUP ─────────────────────────────────────
 
+- name: "[5/10] Check if pg{{ postgres_version }} data dir already initialized"
+  shell: "test -f {{ pg_new_data_dir }}/PG_VERSION"
+  register: pg_data_exists
+  changed_when: false
+  failed_when: false
+
+- name: "[5/10] pg{{ postgres_version }} cluster status"
+  debug:
+    msg: "Data dir {{ pg_new_data_dir }} initialized: {{ pg_data_exists.rc == 0 }}"
+
 - name: "[5/10] Create data directory if custom path"
   file:
     path: "{{ pg_new_data_dir }}"
@@ -140,7 +177,9 @@
     owner: postgres
     group: postgres
     mode: '0700'
-  when: "'/var/lib/postgresql/' not in pg_new_data_dir"
+  when:
+    - pg_data_exists.rc != 0
+    - "'/var/lib/postgresql/' not in pg_new_data_dir"
 
 - name: "[5/10] Fix custom data directory ownership"
   file:
@@ -149,18 +188,23 @@
     owner: postgres
     group: postgres
     recurse: true
-  when: "'/var/lib/postgresql/' not in pg_new_data_dir"
+  when:
+    - pg_data_exists.rc != 0
+    - "'/var/lib/postgresql/' not in pg_new_data_dir"
 
-- name: "[5/10] Stop any auto-created pg{{ postgres_version }} cluster"
+- name: "[5/10] Stop auto-created pg{{ postgres_version }} cluster"
   shell: "pg_ctlcluster {{ postgres_version }} main stop 2>/dev/null || true"
   changed_when: false
+  when: pg_data_exists.rc != 0
 
 - name: "[5/10] Drop auto-created pg{{ postgres_version }} cluster"
   shell: "pg_dropcluster {{ postgres_version }} main 2>/dev/null || true"
   changed_when: false
+  when: pg_data_exists.rc != 0
 
 - name: "[5/10] Create PostgreSQL {{ postgres_version }} cluster"
   shell: "pg_createcluster {{ postgres_version }} main -d {{ pg_new_data_dir }}"
+  when: pg_data_exists.rc != 0
 
 # ── PHASE 6: DEPLOY CONFIG FILES ─────────────────────────────────────────────
 
@@ -180,6 +224,7 @@
     ZABBIX_DB_PASSWORD: "{{ zabbix_db_password }}"
     ZABBIX_SERVER_IPS: "{{ zabbix_server_ips }}"
     POSTGRES_VERSION: "{{ postgres_version }}"
+    POSTGRES_OLD_VERSION: "{{ postgres_old_version }}"
     POSTGRES_DATA_DIR: "{{ pg_new_data_dir }}"
   register: config_result
   notify:
@@ -212,7 +257,7 @@
   wait_for:
     path: /var/run/postgresql/.s.PGSQL.5432
     timeout: 30
-    msg: "PostgreSQL did not start in 30 seconds"
+    msg: "PostgreSQL did not start. Check: journalctl -u postgresql@{{ postgres_version }}-main -n 30"
 
 # ── PHASE 8: DATABASE SETUP ───────────────────────────────────────────────────
 
