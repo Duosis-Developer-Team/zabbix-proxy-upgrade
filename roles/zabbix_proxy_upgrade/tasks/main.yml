@@ -341,7 +341,7 @@
   changed_when: false
   failed_when: svc_status.stdout != 'active'
   loop:
-    - postgresql
+    - "postgresql@{{ postgres_version }}-main"
     - zabbix-proxy
     - zabbix-agent2
 
