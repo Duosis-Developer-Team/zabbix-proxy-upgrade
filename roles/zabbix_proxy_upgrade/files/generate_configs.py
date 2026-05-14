@@ -66,17 +66,32 @@ def update_postgresql_conf(content, updates, old_version, new_version):
             result.append(line)
             continue
 
-        # Check if this param was removed in the new PG version
+        # Remove deprecated/removed parameters
         param_match = re.match(r'^([a-z_]+)\s*=', stripped)
         if param_match and param_match.group(1) in PG_REMOVED_PARAMS:
-            result.append('# removed_in_pg{}: {}'.format(new_version, line))
+            result.append('# [removed_in_pg{}] {}'.format(new_version, line))
             continue
 
-        # Update path references: /postgresql/14/ -> /postgresql/16/
-        updated_line = line.replace(
-            f'/postgresql/{old_version}/',
-            f'/postgresql/{new_version}/'
-        )
+        # Update version-specific references in values:
+        # /etc/postgresql/14/ -> /etc/postgresql/16/
+        # /var/run/postgresql/14- -> /var/run/postgresql/16-
+        # '14/main' -> '16/main'
+        updated_line = line
+        if str(old_version) in updated_line:
+            updated_line = re.sub(
+                r'(/etc/postgresql/)' + re.escape(str(old_version)) + r'/',
+                r'\g<1>' + str(new_version) + '/',
+                updated_line
+            )
+            updated_line = re.sub(
+                r'(/var/run/postgresql/)' + re.escape(str(old_version)) + r'-',
+                r'\g<1>' + str(new_version) + '-',
+                updated_line
+            )
+            updated_line = updated_line.replace(
+                f"'{old_version}/main'",
+                f"'{new_version}/main'"
+            )
 
         replaced = False
         for key, new_value in updates.items():
@@ -153,24 +168,31 @@ def main():
     write_file('/etc/zabbix/zabbix_agent2.conf', new_agent2_conf)
 
     # postgresql.conf
-    # pg16 default conf kullanılır (pg_createcluster tarafından oluşturulmuş)
-    # Sadece data_directory custom path ise güncellenir.
-    # Eski conf'dan bellek ayarları taşınmaz — OOM riskini önlemek için.
-    pg_conf_path = f'/etc/postgresql/{pg_version}/main/postgresql.conf'
+    # Base: old pg14 backup (has all Debian-specific settings: socket dir,
+    # hba_file, ident_file, listen_addresses, etc.)
+    # Changes: remove deprecated params, update /14/ paths to /16/, update data_directory
+    try:
+        with open(pg_backup) as f:
+            pg_content = f.read()
 
-    if pg_data_dir and f'/postgresql/{pg_version}/' not in pg_data_dir:
-        try:
-            with open(pg_conf_path) as f:
-                pg_content = f.read()
-            new_pg_conf = update_postgresql_conf(
-                pg_content,
-                {'data_directory': f"'{pg_data_dir}'"},
-                old_version=pg_old_ver,
-                new_version=pg_version
-            )
-            write_file(pg_conf_path, new_pg_conf, mode=0o644)
-        except FileNotFoundError:
-            pass  # pg16 conf not yet created, pg_createcluster will handle it
+        pg_updates = {}
+        if pg_data_dir:
+            pg_updates['data_directory'] = f"'{pg_data_dir}'"
+
+        new_pg_conf = update_postgresql_conf(
+            pg_content,
+            pg_updates,
+            old_version=pg_old_ver,
+            new_version=pg_version
+        )
+        write_file(
+            f'/etc/postgresql/{pg_version}/main/postgresql.conf',
+            new_pg_conf,
+            mode=0o644
+        )
+    except FileNotFoundError:
+        pass  # No pg backup found, leave pg_createcluster's default conf
+
 
     old_proxy = parse_zabbix_conf(proxy_backup)
 
