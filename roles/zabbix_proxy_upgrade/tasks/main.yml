@@ -251,6 +251,16 @@
   debug:
     msg: "{{ config_result.stdout | from_json }}"
 
+- name: "[6/10] Fix zabbix conf file permissions"
+  file:
+    path: "{{ item }}"
+    owner: root
+    group: zabbix
+    mode: '0640'
+  loop:
+    - /etc/zabbix/zabbix_proxy.conf
+    - /etc/zabbix/zabbix_agent2.conf
+
 - name: "[6/10] Remove generator script from host"
   file:
     path: /tmp/generate_configs.py
