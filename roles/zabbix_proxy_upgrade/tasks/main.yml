@@ -217,12 +217,11 @@
     group: postgres
     mode: '0644'
 
-- name: "[6/10] Update data_directory in postgresql.conf (custom path only)"
+- name: "[6/10] Update data_directory in postgresql.conf"
   lineinfile:
     path: "/etc/postgresql/{{ postgres_version }}/main/postgresql.conf"
     regexp: "^#?data_directory\\s*="
     line: "data_directory = '{{ pg_new_data_dir }}'"
-  when: "'/var/lib/postgresql/' not in pg_new_data_dir"
 
 
 - name: "[6/10] Generate and deploy all config files"
