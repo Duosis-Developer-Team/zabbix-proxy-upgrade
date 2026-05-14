@@ -242,11 +242,33 @@
 
 # ── PHASE 7: START POSTGRESQL ─────────────────────────────────────────────────
 
-- name: "[7/10] Start PostgreSQL {{ postgres_version }}"
+- name: "[7/10] Reload systemd daemon"
   systemd:
-    name: "postgresql@{{ postgres_version }}-main"
-    state: started
-    enabled: true
+    daemon_reload: true
+
+- name: "[7/10] Start PostgreSQL {{ postgres_version }}"
+  shell: timeout 15 systemctl start postgresql@{{ postgres_version }}-main || true
+  changed_when: true
+
+- name: "[7/10] Check PostgreSQL start status"
+  shell: systemctl is-active postgresql@{{ postgres_version }}-main
+  register: pg_active_check
+  changed_when: false
+  failed_when: false
+
+- name: "[7/10] Show PostgreSQL log if failed"
+  shell: journalctl -u postgresql@{{ postgres_version }}-main -n 20 --no-pager
+  register: pg_log
+  changed_when: false
+  when: pg_active_check.stdout != 'active'
+
+- name: "[7/10] Fail with PostgreSQL log"
+  fail:
+    msg: |
+      PostgreSQL {{ postgres_version }} failed to start.
+      Last 20 log lines:
+      {{ pg_log.stdout }}
+  when: pg_active_check.stdout != 'active'
 
 - name: "[7/10] Enable postgresql umbrella service"
   systemd:
@@ -256,8 +278,8 @@
 - name: "[7/10] Wait for PostgreSQL socket"
   wait_for:
     path: /var/run/postgresql/.s.PGSQL.5432
-    timeout: 30
-    msg: "PostgreSQL did not start. Check: journalctl -u postgresql@{{ postgres_version }}-main -n 30"
+    timeout: 15
+    msg: "PostgreSQL socket not available after 15 seconds"
 
 # ── PHASE 8: DATABASE SETUP ───────────────────────────────────────────────────
 

@@ -153,30 +153,24 @@ def main():
     write_file('/etc/zabbix/zabbix_agent2.conf', new_agent2_conf)
 
     # postgresql.conf
-    # - Remove deprecated params
-    # - Update /14/ paths to /16/
-    # - Update data_directory
-    try:
-        with open(pg_backup) as f:
-            pg_content = f.read()
-    except FileNotFoundError:
-        pg_content = ''
+    # pg16 default conf kullanılır (pg_createcluster tarafından oluşturulmuş)
+    # Sadece data_directory custom path ise güncellenir.
+    # Eski conf'dan bellek ayarları taşınmaz — OOM riskini önlemek için.
+    pg_conf_path = f'/etc/postgresql/{pg_version}/main/postgresql.conf'
 
-    pg_updates = {}
-    if pg_data_dir:
-        pg_updates['data_directory'] = f"'{pg_data_dir}'"
-
-    new_pg_conf = update_postgresql_conf(
-        pg_content,
-        pg_updates,
-        old_version=pg_old_ver,
-        new_version=pg_version
-    )
-    write_file(
-        f'/etc/postgresql/{pg_version}/main/postgresql.conf',
-        new_pg_conf,
-        mode=0o644
-    )
+    if pg_data_dir and f'/postgresql/{pg_version}/' not in pg_data_dir:
+        try:
+            with open(pg_conf_path) as f:
+                pg_content = f.read()
+            new_pg_conf = update_postgresql_conf(
+                pg_content,
+                {'data_directory': f"'{pg_data_dir}'"},
+                old_version=pg_old_ver,
+                new_version=pg_version
+            )
+            write_file(pg_conf_path, new_pg_conf, mode=0o644)
+        except FileNotFoundError:
+            pass  # pg16 conf not yet created, pg_createcluster will handle it
 
     old_proxy = parse_zabbix_conf(proxy_backup)
 
