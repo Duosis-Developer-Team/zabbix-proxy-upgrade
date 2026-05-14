@@ -208,11 +208,22 @@
 
 # ── PHASE 6: DEPLOY CONFIG FILES ─────────────────────────────────────────────
 
-- name: "[6/10] Copy config generator script"
+- name: "[6/10] Reset postgresql.conf to pg{{ postgres_version }} defaults"
   copy:
-    src: generate_configs.py
-    dest: /tmp/generate_configs.py
-    mode: '0755'
+    src: "/usr/share/postgresql/{{ postgres_version }}/postgresql.conf.sample"
+    dest: "/etc/postgresql/{{ postgres_version }}/main/postgresql.conf"
+    remote_src: true
+    owner: postgres
+    group: postgres
+    mode: '0644'
+
+- name: "[6/10] Update data_directory in postgresql.conf (custom path only)"
+  lineinfile:
+    path: "/etc/postgresql/{{ postgres_version }}/main/postgresql.conf"
+    regexp: "^#?data_directory\\s*="
+    line: "data_directory = '{{ pg_new_data_dir }}'"
+  when: "'/var/lib/postgresql/' not in pg_new_data_dir"
+
 
 - name: "[6/10] Generate and deploy all config files"
   shell: >
