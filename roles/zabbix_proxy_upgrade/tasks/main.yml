@@ -224,6 +224,12 @@
     line: "data_directory = '{{ pg_new_data_dir }}'"
 
 
+- name: "[6/10] Copy config generator script"
+  copy:
+    src: generate_configs.py
+    dest: /tmp/generate_configs.py
+    mode: '0755'
+
 - name: "[6/10] Generate and deploy all config files"
   shell: >
     python3 /tmp/generate_configs.py
